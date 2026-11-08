@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1d4ed8">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg">
+  <title>Lembrete de Remédios</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="inicio">
+    <div style="text-align:right"><button class="btn-sec btn-peq" onclick="alternarFonte()" aria-label="Aumentar ou diminuir o tamanho do texto">A+ Tamanho do texto</button></div>
+    <h1>💊 Lembrete de Remédios</h1>
+    <p>Escolha como você quer acessar</p>
+    <div class="portas">
+      <a class="porta" href="medico.html">
+        <div class="icone" aria-hidden="true">🩺</div>
+        <h2>Sou Médico</h2>
+        <p>Cadastrar medicamentos e horários dos pacientes</p>
+      </a>
+      <a class="porta" href="paciente.html">
+        <div class="icone" aria-hidden="true">🧑</div>
+        <h2>Sou Paciente</h2>
+        <p>Ver quais remédios tomar e em qual horário</p>
+      </a>
+    </div>
+
+    <section class="card" style="margin-top:28px; text-align:left">
+      <h2>🧪 Primeira vez aqui?</h2>
+      <p class="meta">Carregue pacientes e remédios de exemplo para testar o app sem precisar cadastrar nada.
+        Depois, entre em <b>Sou Paciente</b> com o nome <b>Maria Silva</b> ou <b>João Pereira</b>.</p>
+      <button class="btn btn-full" id="btn-exemplo">Carregar dados de exemplo</button>
+    </section>
+  </div>
+  <script src="dados.js"></script>
+  <script>
+    // Dados de demonstração (inclui uma interação grave e uma leve, para mostrar a checagem)
+    function exemplos() {
+      const hoje = hojeISO();
+      const daquiA = dias => { const d = new Date(); d.setDate(d.getDate() + dias); return hojeISO(d); };
+      const id = n => "ex" + Date.now().toString(36) + n;
+      return [
+        { id: id(1), paciente: "Maria Silva", nome: "Losartana", tipo: "Comprimido", dosagem: "50 mg", quantidade: "1 comprimido",
+          horarios: ["08:00", "20:00"], inicio: hoje, fim: "", obs: "Tomar com água" },
+        { id: id(2), paciente: "Maria Silva", nome: "Metformina", tipo: "Comprimido", dosagem: "850 mg", quantidade: "1 comprimido",
+          horarios: ["07:00", "15:00", "23:00"], inicio: hoje, fim: "", obs: "Tomar junto com as refeições" },
+        { id: id(3), paciente: "Maria Silva", nome: "Sinvastatina", tipo: "Comprimido", dosagem: "20 mg", quantidade: "1 comprimido",
+          horarios: ["21:00"], inicio: hoje, fim: "", obs: "Tomar à noite" },
+        { id: id(4), paciente: "Maria Silva", nome: "Claritromicina", tipo: "Comprimido", dosagem: "500 mg", quantidade: "1 comprimido",
+          horarios: ["08:00", "20:00"], inicio: hoje, fim: daquiA(6), obs: "Antibiótico por 7 dias" },
+        { id: id(5), paciente: "João Pereira", nome: "Levotiroxina", tipo: "Comprimido", dosagem: "50 mcg", quantidade: "1 comprimido",
+          horarios: ["06:00"], inicio: hoje, fim: "", obs: "Em jejum, 30 min antes do café" },
+        { id: id(6), paciente: "João Pereira", nome: "Carbonato de cálcio", tipo: "Comprimido", dosagem: "500 mg", quantidade: "1 comprimido",
+          horarios: ["12:00"], inicio: hoje, fim: "", obs: "Após o almoço" },
+        { id: id(7), paciente: "João Pereira", nome: "Dipirona", tipo: "Gotas", dosagem: "500 mg/mL", quantidade: "20 gotas",
+          horarios: ["08:00", "14:00", "20:00"], inicio: hoje, fim: daquiA(2), obs: "Se tiver dor ou febre" },
+      ];
+    }
+
+    document.getElementById("btn-exemplo").onclick = async () => {
+      try {
+        await DB.iniciar();
+        const atuais = DB.medicamentos();
+        if (atuais.some(m => m.paciente === "Maria Silva" || m.paciente === "João Pereira")) {
+          toast("Os dados de exemplo já estão carregados 👍");
+          return;
+        }
+        await DB.salvarMedicamentos([...atuais, ...exemplos()]);
+        toast("Pronto! Entre como paciente 'Maria Silva' ou 'João Pereira'.");
+      } catch (e) { erroFatal(e); }
+    };
+  </script>
+</body>
+</html>

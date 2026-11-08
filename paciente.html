@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1d4ed8">
+  <link rel="manifest" href="manifest.json">
+  <title>Área do Paciente</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🧑 Meus Remédios</h1>
+    <button class="btn-fonte" onclick="alternarFonte()" aria-label="Aumentar ou diminuir o tamanho do texto">A+</button>
+    <a href="index.html">← Início</a>
+  </header>
+
+  <!-- Tela de login (sem senha) -->
+  <main class="estreito" id="tela-login" hidden>
+    <section class="card" style="margin-top:30px">
+      <h2>Entrar</h2>
+      <p class="meta">Digite seu nome como foi cadastrado pelo seu médico.</p>
+      <form id="form-login">
+        <label for="nome-login">Seu nome</label>
+        <input id="nome-login" placeholder="Ex.: Maria Silva" autocomplete="off" required>
+        <div class="erro" id="erro-login" role="alert" style="margin-top:6px"></div>
+        <button type="submit" class="btn btn-full">Entrar</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- Tela do paciente logado -->
+  <main class="medio" id="tela-doses" hidden>
+    <section class="card cabecalho-paciente">
+      <div>
+        <h2>Olá, <span id="nome-paciente"></span> 👋</h2>
+        <div class="meta" id="data-hoje"></div>
+      </div>
+      <button class="btn-sec" id="sair">Sair</button>
+    </section>
+
+    <section class="card ativar" id="ativar-alertas" hidden>
+      <div>
+        <strong>🔔 Ative os alertas</strong>
+        <div class="meta">Para ouvir o som e receber notificação na hora de cada remédio.</div>
+      </div>
+      <button class="btn" id="btn-ativar">Ativar</button>
+    </section>
+
+    <div id="avisos"></div>
+    <div class="alerta" id="alerta" role="status" aria-live="polite"></div>
+
+    <div class="resumo">
+      <div><b id="n-pend">0</b><span>Para tomar agora</span></div>
+      <div><b id="n-tom">0</b><span>Tomados hoje</span></div>
+      <div><b id="n-tot">0</b><span>Doses no dia</span></div>
+    </div>
+
+    <section class="card">
+      <h2>Doses de hoje</h2>
+      <div id="doses"></div>
+    </section>
+
+    <section class="card" id="card-interacoes" hidden>
+      <h2>⚠️ Atenção com seus remédios</h2>
+      <p class="meta">Alguns dos seus remédios podem interagir entre si. Seu médico já foi avisado.</p>
+      <div id="interacoes"></div>
+    </section>
+
+    <section class="card">
+      <h2>📋 Boletim de saúde de hoje</h2>
+      <p class="meta" id="boletim-status"></p>
+      <form id="form-boletim">
+        <label id="lbl-humor">Como você está se sentindo?</label>
+        <div class="opcoes" id="op-humor" role="radiogroup" aria-labelledby="lbl-humor"></div>
+
+        <label id="lbl-evolucao">Comparado a ontem, você...</label>
+        <div class="opcoes" id="op-evolucao" role="radiogroup" aria-labelledby="lbl-evolucao"></div>
+
+        <label id="lbl-sintomas">Está sentindo algum destes sintomas?</label>
+        <div class="opcoes" id="op-sintomas" role="group" aria-labelledby="lbl-sintomas"></div>
+
+        <label for="relato">Quer contar mais alguma coisa ao seu médico?</label>
+        <textarea id="relato" rows="3" placeholder="Ex.: Dormi melhor esta noite, mas senti um pouco de enjoo depois do almoço."></textarea>
+
+        <button type="submit" class="btn btn-full">Enviar boletim ao médico</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Meus boletins anteriores</h2>
+      <div id="historico"></div>
+    </section>
+  </main>
+
+  <script src="dados.js"></script>
+  <script src="interacoes.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    const TOLERANCIA = 30;  // minutos antes/depois em que a dose fica "Tomar agora"
+    const ADIAR_MAX = 60;   // RN03: só pode adiar até 60 min após o horário original
+    const JANELA_ALERTA = 5; // alerta dispara no horário e até 5 min depois (se o app estava fechado)
+
+    const minutos = hm => { const [h, m] = hm.split(":").map(Number); return h * 60 + m; };
+    const fmtMin = m => { m = ((m % 1440) + 1440) % 1440; return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; };
+    const agoraMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+
+    // =================================================================
+    //  Som e notificações (RF03, RNF01)
+    // =================================================================
+    const Som = {
+      ctx: null,
+      ativar() {
+        try {
+          this.ctx = this.ctx || new (window.AudioContext || window.webkitAudioContext)();
+          return this.ctx.resume();
+        } catch { return Promise.resolve(); }
+      },
+      ativo() { return this.ctx?.state === "running"; },
+      tocar(curto = false) {
+        navigator.vibrate?.(curto ? 200 : [400, 200, 400, 200, 400]);
+        if (!this.ativo()) return;
+        const t0 = this.ctx.currentTime;
+        const bipes = curto ? [0] : [0, 0.35, 0.7, 1.5, 1.85, 2.2];
+        for (const d of bipes) {
+          const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+          o.type = "sine";
+          o.frequency.value = 880;
+          g.gain.setValueAtTime(0.0001, t0 + d);
+          g.gain.exponentialRampToValueAtTime(0.5, t0 + d + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.28);
+          o.connect(g).connect(this.ctx.destination);
+          o.start(t0 + d);
+          o.stop(t0 + d + 0.3);
+        }
+      },
+    };
+
+    // Navegadores só liberam som depois de um toque do usuário
+    document.addEventListener("click", () => Som.ativar().then(atualizarBannerAlertas), true);
+
+    async function notificar(titulo, corpo, tag) {
+      if (!("Notification" in window) || Notification.permission !== "granted") return;
+      const opcoes = { body: corpo, tag, requireInteraction: true, icon: "icon.svg", badge: "icon.svg" };
+      try {
+        const reg = await navigator.serviceWorker?.getRegistration();
+        if (reg) reg.showNotification(titulo, opcoes);
+        else new Notification(titulo, opcoes);
+      } catch (e) { console.warn("Notificação não enviada", e); }
+    }
+
+    function atualizarBannerAlertas() {
+      const faltaPermissao = "Notification" in window && Notification.permission === "default";
+      $("ativar-alertas").hidden = Som.ativo() && !faltaPermissao;
+    }
+
+    $("btn-ativar").onclick = async () => {
+      await Som.ativar();
+      Som.tocar(true);
+      if ("Notification" in window && Notification.permission === "default") {
+        try { await Notification.requestPermission(); } catch {}
+      }
+      atualizarBannerAlertas();
+      toast("Alertas ativados 🔔");
+    };
+
+    // =================================================================
+    //  Login sem senha: o paciente só entra com o próprio nome
+    // =================================================================
+    let pacienteLogado = localStorage.getItem("pacienteLogado");
+
+    function mostrarTela() {
+      const logado = !!pacienteLogado;
+      $("tela-login").hidden = logado;
+      $("tela-doses").hidden = !logado;
+      if (logado) {
+        $("nome-paciente").textContent = pacienteLogado;
+        desenhar();
+        desenharBoletins();
+        atualizarBannerAlertas();
+        verificarAlertas();
+      }
+    }
+
+    $("form-login").onsubmit = e => {
+      e.preventDefault();
+      const digitado = normalizarTexto($("nome-login").value);
+      const encontrado = DB.pacientes().find(p => normalizarTexto(p) === digitado);
+      if (!encontrado) {
+        $("erro-login").textContent = "Não encontramos remédios cadastrados para esse nome. Confira com seu médico.";
+        return;
+      }
+      pacienteLogado = encontrado;
+      localStorage.setItem("pacienteLogado", encontrado);
+      $("erro-login").textContent = "";
+      $("form-login").reset();
+      mostrarTela();
+    };
+
+    $("sair").onclick = () => {
+      pacienteLogado = null;
+      localStorage.removeItem("pacienteLogado");
+      fecharModal();
+      mostrarTela();
+    };
+
+    // =================================================================
+    //  Doses do dia (RF04: Tomada / Adiada / Ignorada)
+    // =================================================================
+    function medsAtivos(paciente) {
+      return DB.medicamentos().filter(m => m.paciente === paciente && statusTratamento(m) === "ativo");
+    }
+
+    function dosesDeHoje(paciente) {
+      const hoje = hojeISO();
+      const agora = agoraMin();
+      const registros = DB.registros();
+
+      return medsAtivos(paciente)
+        .flatMap(m => m.horarios.map(hora => {
+          const chave = `${m.id}|${hoje}|${hora}`;
+          const r = registros[chave];
+          const horaMin = minutos(hora);
+          const efetivaMin = r?.estado === "adiada" ? r.adiadaMin : horaMin;
+          const diff = agora - efetivaMin;
+          let status;
+          if (r?.estado === "tomada") status = "tomada";
+          else if (r?.estado === "ignorada") status = "ignorada";
+          else if (r?.estado === "adiada" && diff < 0) status = "adiada";
+          else if (diff > TOLERANCIA) status = "atrasada";
+          else if (diff >= -TOLERANCIA) status = "pendente";
+          else status = "futura";
+          return { med: m, hora, horaMin, efetivaMin, status, registro: r, chave };
+        }))
+        .sort((a, b) => a.horaMin - b.horaMin);
+    }
+
+    const ROTULO = {
+      tomada: d => `✔ Tomado às ${d.registro.em}`,
+      ignorada: () => "✖ Ignorado",
+      adiada: d => `⏸ Adiado para ${fmtMin(d.efetivaMin)}`,
+      pendente: d => d.registro?.estado === "adiada" ? `⏰ Tomar agora (adiado para ${fmtMin(d.efetivaMin)})` : "⏰ Tomar agora",
+      atrasada: () => "⚠ Atrasado",
+      futura: () => "Mais tarde",
+    };
+
+    function descricaoMed(m) {
+      return [m.tipo, m.quantidade, m.obs].filter(Boolean).map(esc).join(" · ");
+    }
+
+    function botoesDose(d) {
+      if (d.status === "tomada" || d.status === "ignorada") {
+        return `<button class="btn-sec btn-peq" onclick="desfazer('${d.chave}')">Desfazer</button>`;
+      }
+      const podeAdiar = d.status !== "futura";
+      return `
+        <button class="btn-ok" onclick="tomar('${d.chave}')">✔ Tomei</button>
+        ${podeAdiar ? `<button class="btn-sec" onclick="abrirAdiar('${d.chave}')">⏸ Adiar</button>` : ""}
+        <button class="btn-cinza" onclick="ignorar('${d.chave}')">✖ Ignorar</button>`;
+    }
+
+    function desenhar() {
+      if (!pacienteLogado) return;
+      const paciente = pacienteLogado;
+      $("data-hoje").textContent = "📅 " + new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
+
+      // Avisos de tratamentos encerrados pelo médico nos últimos 7 dias
+      const seteDias = new Date(); seteDias.setDate(seteDias.getDate() - 7);
+      $("avisos").innerHTML = DB.medicamentos()
+        .filter(m => m.paciente === paciente && m.status && m.encerradoEm >= hojeISO(seteDias))
+        .map(m => `<div class="aviso-med ${m.status}">
+            ${m.status === "concluido" ? "✔ Seu médico <b>concluiu</b>" : "⛔ Seu médico <b>interrompeu</b>"}
+            o tratamento com <b>${esc(m.nome)}</b> em ${formatarData(m.encerradoEm)}. Não é mais preciso tomar este remédio.
+            ${m.motivo ? `<br><small>Motivo: ${esc(m.motivo)}</small>` : ""}
+          </div>`).join("");
+
+      const doses = dosesDeHoje(paciente);
+      const urgentes = doses.filter(d => d.status === "pendente" || d.status === "atrasada");
+
+      $("n-pend").textContent = urgentes.length;
+      $("n-tom").textContent = doses.filter(d => d.status === "tomada").length;
+      $("n-tot").textContent = doses.length;
+
+      $("alerta").textContent = urgentes.length
+        ? `🔔 Você tem ${urgentes.length} remédio(s) para tomar: ` + urgentes.map(d => `${d.med.nome} (${d.hora})`).join(", ")
+        : "";
+
+      $("doses").innerHTML = doses.length ? doses.map(d => `
+        <div class="dose ${d.status}">
+          <div class="hora">${d.hora}</div>
+          <div class="info">
+            <div class="status">${ROTULO[d.status](d)}</div>
+            <strong>${esc(d.med.nome)}</strong> · ${esc(d.med.dosagem)}
+            <div class="meta">${descricaoMed(d.med)}</div>
+            <div class="acoes-dose">${botoesDose(d)}</div>
+          </div>
+        </div>`).join("")
+        : `<div class="vazio">Nenhum remédio para hoje 🎉</div>`;
+
+      // RF06: interações entre os remédios em uso (com aviso obrigatório – RN02)
+      const inter = verificarInteracoes(medsAtivos(paciente));
+      $("card-interacoes").hidden = !inter.length;
+      $("interacoes").innerHTML = renderInteracoes(inter);
+    }
+
+    function acharDose(chave) { return dosesDeHoje(pacienteLogado).find(d => d.chave === chave); }
+
+    function registrarDose(chave, info, msg) {
+      const [id, data, hora] = chave.split("|");
+      DB.registrar(id, data, hora, info);
+      // Tira a dose da janela de alerta; fecha a janela se não sobrar nenhuma
+      document.querySelector(`.alerta-dose[data-chave="${chave}"]`)?.remove();
+      const modal = document.getElementById("modal");
+      if (modal && !modal.querySelector(".alerta-dose")) fecharModal();
+      toast(msg);
+      desenhar();
+    }
+
+    function tomar(chave) { registrarDose(chave, { estado: "tomada" }, "Dose registrada ✔"); }
+    function ignorar(chave) { registrarDose(chave, { estado: "ignorada" }, "Dose marcada como ignorada"); }
+    function desfazer(chave) {
+      const [id, data, hora] = chave.split("|");
+      DB.limparRegistro(id, data, hora);
+      desenhar();
+    }
+
+    // RN03: adiar no máximo até 60 minutos depois do horário ORIGINAL
+    function abrirAdiar(chave) {
+      const d = acharDose(chave);
+      if (!d) return;
+      const limite = d.horaMin + ADIAR_MAX;
+      const base = Math.max(agoraMin(), d.horaMin);
+      const opcoes = [15, 30, 60].map(x => ({ x, novo: base + x })).filter(o => o.novo <= limite);
+      if (limite - base >= 5 && !opcoes.some(o => o.novo === limite)) opcoes.push({ x: limite - base, novo: limite });
+
+      abrirModal(`
+        <h2>⏸ Adiar ${esc(d.med.nome)}</h2>
+        <p class="meta">Horário original: <b>${d.hora}</b>. Para não juntar com a próxima dose,
+          só é possível adiar até <b>${fmtMin(limite)}</b> (60 minutos depois).</p>
+        <div class="acoes">
+          ${opcoes.length
+            ? opcoes.map(o => `<button class="btn" onclick="adiar('${chave}', ${o.novo})">+${o.x} min (às ${fmtMin(o.novo)})</button>`).join("")
+            : `<p class="erro">Já passou do limite de 60 minutos. Tome agora ou marque como ignorada.</p>`}
+        </div>
+        <div class="acoes"><button class="btn-sec" onclick="fecharModal()">Cancelar</button></div>`);
+    }
+
+    function adiar(chave, novoMin) {
+      const d = acharDose(chave);
+      if (!d || novoMin > d.horaMin + ADIAR_MAX) { toast("Não é possível adiar mais de 60 minutos"); return; }
+      fecharModal();
+      registrarDose(chave, { estado: "adiada", adiadaMin: novoMin }, `Dose adiada para ${fmtMin(novoMin)}`);
+    }
+
+    // =================================================================
+    //  Alerta no horário exato (RF03): visual + som + notificação
+    // =================================================================
+    function verificarAlertas() {
+      if (!pacienteLogado) return;
+      const hoje = hojeISO();
+      const agora = agoraMin();
+      let alertados = JSON.parse(localStorage.getItem("alertados") || "{}");
+      // descarta registros de dias anteriores
+      alertados = Object.fromEntries(Object.entries(alertados).filter(([k]) => k.includes(`|${hoje}|`)));
+
+      const novas = dosesDeHoje(pacienteLogado).filter(d =>
+        (d.status === "pendente" || d.status === "atrasada") &&
+        agora >= d.efetivaMin && agora - d.efetivaMin <= JANELA_ALERTA &&
+        !alertados[`${d.chave}@${d.efetivaMin}`]);
+      if (!novas.length) return;
+
+      novas.forEach(d => { alertados[`${d.chave}@${d.efetivaMin}`] = 1; });
+      localStorage.setItem("alertados", JSON.stringify(alertados));
+
+      Som.tocar();
+      novas.forEach(d => notificar("⏰ Hora do remédio",
+        `${d.med.nome} ${d.med.dosagem}${d.med.quantidade ? " – " + d.med.quantidade : ""}`, d.chave));
+
+      abrirModal(`
+        <div role="alert">
+          <h2>⏰ Hora do remédio!</h2>
+          ${novas.map(d => `
+            <div class="alerta-dose" data-chave="${d.chave}">
+              <div class="hora-grande">${fmtMin(d.efetivaMin)}</div>
+              <strong>${esc(d.med.nome)}</strong> · ${esc(d.med.dosagem)}
+              <div class="meta">${descricaoMed(d.med)}</div>
+              <div class="acoes-dose">${botoesDose(d)}</div>
+            </div>`).join("")}
+        </div>
+        <div class="acoes"><button class="btn-sec" onclick="fecharModal()">Fechar</button></div>`, "modal-alerta");
+      desenhar();
+    }
+
+    // =================================================================
+    //  Boletim de saúde
+    // =================================================================
+    function montarFormBoletim() {
+      $("op-humor").innerHTML = Object.entries(HUMORES).map(([v, [e, t]]) =>
+        `<label class="opcao"><input type="radio" name="humor" value="${v}"><span>${e}<small>${t}</small></span></label>`).join("");
+      $("op-evolucao").innerHTML = Object.entries(EVOLUCOES).map(([v, [e, t]]) =>
+        `<label class="opcao texto"><input type="radio" name="evolucao" value="${v}"><span>${e} ${t}</span></label>`).join("");
+      $("op-sintomas").innerHTML = SINTOMAS.map(s =>
+        `<label class="opcao texto"><input type="checkbox" name="sintoma" value="${s}"><span>${s}</span></label>`).join("");
+    }
+
+    function desenharBoletins() {
+      const meus = DB.boletins().filter(b => b.paciente === pacienteLogado)
+        .sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora));
+      const deHoje = meus.find(b => b.data === hojeISO());
+      $("boletim-status").textContent = deHoje
+        ? `✔ Você já enviou o boletim de hoje às ${deHoje.hora}. Se enviar de novo, ele será atualizado.`
+        : "Conte ao seu médico como você está se sentindo hoje.";
+      $("historico").innerHTML = meus.length
+        ? meus.slice(0, 7).map(b => renderBoletim(b, false)).join("")
+        : `<div class="vazio">Você ainda não enviou nenhum boletim.</div>`;
+    }
+
+    $("form-boletim").onsubmit = e => {
+      e.preventDefault();
+      const f = e.target;
+      const humor = f.querySelector("[name=humor]:checked");
+      const evolucao = f.querySelector("[name=evolucao]:checked");
+      if (!humor || !evolucao) { toast("Diga como está se sentindo e se melhorou ou piorou"); return; }
+      DB.salvarBoletim({
+        paciente: pacienteLogado,
+        data: hojeISO(),
+        hora: horaAgora(),
+        humor: Number(humor.value),
+        evolucao: evolucao.value,
+        sintomas: [...f.querySelectorAll("[name=sintoma]:checked")].map(i => i.value),
+        relato: $("relato").value.trim(),
+      });
+      f.reset();
+      toast("Boletim enviado ao seu médico ✔");
+      desenharBoletins();
+    };
+
+    // =================================================================
+    //  Início
+    // =================================================================
+    window.addEventListener("storage", async e => {
+      if (CHAVES_SAUDE.includes(e.key)) await DB.recarregar(e.key);
+      if (pacienteLogado) { desenhar(); desenharBoletins(); }
+    });
+    setInterval(() => { desenhar(); verificarAlertas(); }, 10000); // checa a cada 10 s
+
+    DB.iniciar().then(() => { montarFormBoletim(); mostrarTela(); }).catch(erroFatal);
+  </script>
+</body>
+</html>

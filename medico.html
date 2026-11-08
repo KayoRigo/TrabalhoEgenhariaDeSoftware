@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1d4ed8">
+  <link rel="manifest" href="manifest.json">
+  <title>Área do Médico</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🩺 Área do Médico</h1>
+    <button class="btn-fonte" onclick="alternarFonte()" aria-label="Aumentar ou diminuir o tamanho do texto">A+</button>
+    <a href="index.html">← Início</a>
+  </header>
+
+  <main class="grid-2">
+    <!-- Cadastro (RF01 / RF02) -->
+    <section class="card">
+      <h2>Cadastrar medicamento</h2>
+      <form id="form">
+        <label for="paciente">Paciente</label>
+        <input id="paciente" list="lista-pacientes" placeholder="Nome do paciente" autocomplete="off" required>
+        <datalist id="lista-pacientes"></datalist>
+
+        <label for="nome">Medicamento</label>
+        <input id="nome" placeholder="Ex.: Losartana" autocomplete="off" required>
+
+        <div class="linha">
+          <div>
+            <label for="tipo">Tipo de medicação</label>
+            <select id="tipo" required></select>
+          </div>
+          <div>
+            <label for="dosagem">Dosagem</label>
+            <input id="dosagem" placeholder="Ex.: 50 mg" required>
+          </div>
+        </div>
+
+        <label for="quantidade">Quantidade por dose</label>
+        <input id="quantidade" placeholder="Ex.: 1 comprimido, 10 gotas">
+
+        <label for="primeiro">Horários e frequência</label>
+        <div class="linha">
+          <div>
+            <input id="primeiro" type="time" value="08:00" aria-describedby="ajuda-primeiro">
+            <div class="ajuda" id="ajuda-primeiro">Primeiro horário</div>
+          </div>
+          <div>
+            <select id="intervalo" aria-label="Frequência">
+              <option value="">Adicionar só este horário</option>
+              <option value="4">De 4 em 4 horas</option>
+              <option value="6">De 6 em 6 horas</option>
+              <option value="8">De 8 em 8 horas</option>
+              <option value="12">De 12 em 12 horas</option>
+              <option value="24">1 vez ao dia</option>
+            </select>
+          </div>
+        </div>
+        <button type="button" class="btn-sec btn-full" id="add-horario" style="margin-top:8px">+ Adicionar horário(s)</button>
+        <div class="horarios" id="horarios" aria-live="polite"></div>
+
+        <div class="linha">
+          <div>
+            <label for="inicio">Início</label>
+            <input id="inicio" type="date" required>
+          </div>
+          <div>
+            <label for="dias">Duração (dias)</label>
+            <input id="dias" type="number" min="1" placeholder="Vazio = uso contínuo">
+          </div>
+        </div>
+
+        <label for="obs">Instruções</label>
+        <textarea id="obs" rows="2" placeholder="Ex.: Tomar após o café da manhã"></textarea>
+
+        <button type="submit" class="btn btn-full">Salvar medicamento</button>
+        <p class="ajuda" style="text-align:center; margin-top:8px">As interações com os remédios que o paciente já usa são verificadas antes de salvar.</p>
+      </form>
+    </section>
+
+    <!-- Lista -->
+    <section class="card">
+      <h2>Medicamentos cadastrados</h2>
+      <select id="filtro" style="margin-bottom:12px" aria-label="Filtrar por paciente">
+        <option value="">Todos os pacientes</option>
+      </select>
+      <div id="lista"></div>
+    </section>
+
+    <!-- Boletins enviados pelos pacientes -->
+    <section class="card full">
+      <h2>📋 Boletins de saúde dos pacientes</h2>
+      <p class="meta" style="margin:-8px 0 12px">Segue o filtro de paciente acima.</p>
+      <div id="boletins"></div>
+    </section>
+  </main>
+
+  <script src="dados.js"></script>
+  <script src="interacoes.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    let horarios = [];
+    let encerrando = null;
+    let aguardandoConfirmacao = null; // medicamento esperando o médico confirmar após alerta de interação
+
+    $("tipo").innerHTML = `<option value="">Selecione...</option>` + TIPOS_MEDICACAO.map(t => `<option>${t}</option>`).join("");
+    $("inicio").value = hojeISO();
+
+    // ---------- Horários ----------
+    function desenharHorarios() {
+      horarios.sort();
+      $("horarios").innerHTML = horarios.length
+        ? horarios.map(h => `<span class="chip">${h}<button type="button" onclick="removerHorario('${h}')" aria-label="Remover horário ${h}">×</button></span>`).join("")
+        : `<span class="ajuda">Nenhum horário adicionado</span>`;
+    }
+
+    function removerHorario(h) {
+      horarios = horarios.filter(x => x !== h);
+      desenharHorarios();
+    }
+
+    $("add-horario").onclick = () => {
+      const primeiro = $("primeiro").value;
+      if (!primeiro) return;
+      const intervalo = Number($("intervalo").value);
+      const novos = [primeiro];
+      if (intervalo && intervalo < 24) {
+        let [h, m] = primeiro.split(":").map(Number);
+        for (let i = 1; i < 24 / intervalo; i++) {
+          h = (h + intervalo) % 24;
+          novos.push(`${pad(h)}:${pad(m)}`);
+        }
+      }
+      novos.forEach(h => { if (!horarios.includes(h)) horarios.push(h); });
+      desenharHorarios();
+    };
+
+    // ---------- Cadastro com checagem de interações (RF05, RNF02, RN01) ----------
+    function montarMedicamento() {
+      const inicio = $("inicio").value;
+      const dias = Number($("dias").value);
+      let fim = "";
+      if (dias) {
+        const d = new Date(inicio + "T00:00");
+        d.setDate(d.getDate() + dias - 1);
+        fim = hojeISO(d);
+      }
+      const digitado = $("paciente").value.trim();
+      // Reaproveita a grafia de um paciente já cadastrado ("maria silva" → "Maria Silva")
+      const paciente = DB.pacientes().find(p => normalizarTexto(p) === normalizarTexto(digitado)) || digitado;
+      return {
+        id: Date.now().toString(36),
+        paciente,
+        nome: $("nome").value.trim(),
+        tipo: $("tipo").value,
+        dosagem: $("dosagem").value.trim(),
+        quantidade: $("quantidade").value.trim(),
+        horarios: [...horarios],
+        inicio, fim,
+        obs: $("obs").value.trim(),
+      };
+    }
+
+    $("form").onsubmit = e => {
+      e.preventDefault();
+      if (!horarios.length) { toast("Adicione pelo menos um horário"); return; }
+      const novo = montarMedicamento();
+
+      const t0 = performance.now();
+      const emUso = DB.medicamentos().filter(m =>
+        m.paciente === novo.paciente && ["ativo", "agendado"].includes(statusTratamento(m)));
+      const achadas = verificarInteracoes([...emUso, novo]).filter(i => i.med1 === novo || i.med2 === novo);
+      const ms = performance.now() - t0;
+
+      if (!achadas.length) {
+        salvarMedicamento(novo);
+        toast("Medicamento cadastrado ✔ Nenhuma interação encontrada.");
+        return;
+      }
+
+      aguardandoConfirmacao = novo;
+      const grave = achadas.some(i => i.gravidade === "grave");
+      abrirModal(`
+        <h2 class="${grave ? "titulo-grave" : ""}">${grave ? "⛔ Interação GRAVE encontrada" : "⚠️ Possível interação encontrada"}</h2>
+        <p class="meta">${esc(novo.nome)} pode interagir com remédio(s) que ${esc(novo.paciente)} já usa.
+          <br>Verificado em ${ms < 1 ? "menos de 1" : Math.round(ms)} ms.</p>
+        ${renderInteracoes(achadas)}
+        ${grave ? `<label class="ciente"><input type="checkbox" onchange="document.getElementById('btn-salvar-mesmo').disabled = !this.checked">
+          Estou ciente do risco e quero salvar mesmo assim</label>` : ""}
+        <div class="acoes">
+          <button class="btn-sec" onclick="fecharModal()">Cancelar e revisar</button>
+          <button class="${grave ? "btn-perigo" : "btn"}" id="btn-salvar-mesmo" ${grave ? "disabled" : ""} onclick="confirmarSalvar()">Salvar mesmo assim</button>
+        </div>`, grave ? "modal-grave" : "");
+    };
+
+    function confirmarSalvar() {
+      if (!aguardandoConfirmacao) return;
+      salvarMedicamento(aguardandoConfirmacao);
+      aguardandoConfirmacao = null;
+      fecharModal();
+      toast("Medicamento cadastrado ✔ (com alerta de interação)");
+    }
+
+    function salvarMedicamento(novo) {
+      const lista = DB.medicamentos();
+      lista.push(novo);
+      DB.salvarMedicamentos(lista);
+
+      $("form").reset();
+      $("paciente").value = novo.paciente; // facilita cadastrar vários para o mesmo paciente
+      $("inicio").value = hojeISO();
+      $("primeiro").value = "08:00";
+      horarios = [];
+      desenharHorarios();
+      atualizar();
+    }
+
+    // ---------- Excluir (só com paciente selecionado) ----------
+    function excluir(id, botao) {
+      if (!$("filtro").value) { toast("Selecione um paciente para excluir"); return; }
+      if (botao.dataset.confirmar !== "1") {
+        botao.dataset.confirmar = "1";
+        botao.textContent = "Confirmar exclusão?";
+        botao.style.background = "var(--vermelho)";
+        botao.style.color = "#fff";
+        setTimeout(() => {
+          if (!botao.isConnected) return;
+          botao.dataset.confirmar = "";
+          botao.textContent = "Excluir";
+          botao.style.background = botao.style.color = "";
+        }, 4000);
+        return;
+      }
+      DB.salvarMedicamentos(DB.medicamentos().filter(m => m.id !== id));
+      atualizar();
+      toast("Medicamento excluído");
+    }
+
+    // ---------- Lista ----------
+    function atualizar() {
+      const pacientes = DB.pacientes();
+      $("lista-pacientes").innerHTML = pacientes.map(p => `<option value="${esc(p)}">`).join("");
+
+      const filtroAtual = $("filtro").value;
+      $("filtro").innerHTML = `<option value="">Todos os pacientes</option>` +
+        pacientes.map(p => `<option ${p === filtroAtual ? "selected" : ""}>${esc(p)}</option>`).join("");
+
+      // Encerrar e excluir só são permitidos com um paciente específico selecionado
+      const pacienteFiltro = $("filtro").value;
+      const podeEditar = !!pacienteFiltro;
+      const ordem = { ativo: 0, agendado: 1, concluido: 2, interrompido: 2, finalizado: 3 };
+      const meds = DB.medicamentos()
+        .filter(m => !pacienteFiltro || m.paciente === pacienteFiltro)
+        .sort((a, b) => ordem[statusTratamento(a)] - ordem[statusTratamento(b)]);
+
+      let topo = "";
+      if (!podeEditar && meds.length) {
+        topo = `<div class="ajuda" style="margin-bottom:10px">ℹ️ Para encerrar ou excluir um medicamento, selecione o paciente acima.</div>`;
+      }
+      if (podeEditar) {
+        // RF06: interações entre os remédios em uso pelo paciente
+        const emUso = meds.filter(m => ["ativo", "agendado"].includes(statusTratamento(m)));
+        const inter = verificarInteracoes(emUso);
+        if (inter.length) topo = `<div class="painel-interacoes"><strong>⚠️ Interações entre os remédios em uso</strong>${renderInteracoes(inter)}</div>`;
+      }
+
+      $("lista").innerHTML = topo + (meds.length ? meds.map(m => itemMedicamento(m, podeEditar)).join("")
+        : `<div class="vazio">Nenhum medicamento cadastrado ainda.</div>`);
+
+      desenharBoletins(pacienteFiltro);
+    }
+
+    function itemMedicamento(m, podeEditar) {
+      const st = statusTratamento(m);
+      const emCurso = st === "ativo" || st === "agendado";
+      const encerradoPeloMedico = st === "concluido" || st === "interrompido";
+      const detalhes = [m.tipo, m.quantidade].filter(Boolean).map(esc).join(" · ");
+      return `
+        <div class="lista-item ${emCurso ? "" : "encerrado"}">
+          <div class="topo">
+            <div>
+              <strong>${esc(m.nome)}</strong> · ${esc(m.dosagem)}
+              <div class="meta">👤 ${esc(m.paciente)}${detalhes ? " · 💊 " + detalhes : ""}</div>
+            </div>
+            <span class="badge ${st}">${STATUS_ROTULO[st]}</span>
+          </div>
+          <div class="horarios">${m.horarios.map(h => `<span class="chip">${h}</span>`).join("")}</div>
+          <div class="meta">📅 ${formatarData(m.inicio)} ${m.fim ? "até " + formatarData(m.fim) : "· uso contínuo"}</div>
+          ${m.obs ? `<div class="meta">📝 ${esc(m.obs)}</div>` : ""}
+          ${encerradoPeloMedico ? `<div class="meta">🛑 ${STATUS_ROTULO[st]} em ${formatarData(m.encerradoEm)}${m.motivo ? " · Motivo: " + esc(m.motivo) : ""}</div>` : ""}
+          ${podeEditar ? `
+            <div class="acoes">
+              ${emCurso && encerrando !== m.id ? `<button class="btn-sec btn-peq" onclick="abrirEncerrar('${m.id}')">Encerrar tratamento</button>` : ""}
+              ${encerradoPeloMedico ? `<button class="btn-sec btn-peq" onclick="reativar('${m.id}')">Reativar</button>` : ""}
+              <button class="btn-del btn-peq" onclick="excluir('${m.id}', this)">Excluir</button>
+            </div>
+            ${encerrando === m.id ? painelEncerrar(m.id) : ""}` : ""}
+        </div>`;
+    }
+
+    // ---------- Encerrar tratamento antes do prazo ----------
+    function painelEncerrar(id) {
+      return `
+        <div class="encerrar">
+          <label style="margin-top:0">Como encerrar este tratamento?</label>
+          <div class="opcoes">
+            <label class="opcao texto"><input type="radio" name="tipo-encerrar" value="concluido" checked><span>✔ Concluir (objetivo atingido)</span></label>
+            <label class="opcao texto"><input type="radio" name="tipo-encerrar" value="interrompido"><span>⛔ Interromper</span></label>
+          </div>
+          <label for="motivo-encerrar">Motivo (opcional)</label>
+          <input id="motivo-encerrar" placeholder="Ex.: paciente recuperado / efeito colateral">
+          <div class="acoes">
+            <button class="btn btn-peq" onclick="confirmarEncerrar('${id}')">Confirmar</button>
+            <button class="btn-sec btn-peq" onclick="abrirEncerrar(null)">Cancelar</button>
+          </div>
+        </div>`;
+    }
+
+    function abrirEncerrar(id) { encerrando = id; atualizar(); }
+
+    function alterarMedicamento(id, mudar) {
+      DB.salvarMedicamentos(DB.medicamentos().map(m => m.id === id ? mudar({ ...m }) : m));
+    }
+
+    function confirmarEncerrar(id) {
+      if (!$("filtro").value) return;
+      const tipo = document.querySelector("[name=tipo-encerrar]:checked").value;
+      const motivo = $("motivo-encerrar").value.trim();
+      alterarMedicamento(id, m => ({ ...m, status: tipo, encerradoEm: hojeISO(), motivo }));
+      encerrando = null;
+      atualizar();
+      toast(tipo === "concluido" ? "Tratamento concluído ✔" : "Tratamento interrompido");
+    }
+
+    function reativar(id) {
+      if (!$("filtro").value) return;
+      alterarMedicamento(id, m => { delete m.status; delete m.encerradoEm; delete m.motivo; return m; });
+      atualizar();
+      toast("Tratamento reativado");
+    }
+
+    // ---------- Boletins ----------
+    function desenharBoletins(paciente) {
+      const lista = DB.boletins()
+        .filter(b => !paciente || b.paciente === paciente)
+        .sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora));
+      $("boletins").innerHTML = lista.length
+        ? lista.map(b => renderBoletim(b, true)).join("")
+        : `<div class="vazio">Nenhum boletim recebido ainda.</div>`;
+    }
+
+    $("filtro").onchange = () => { encerrando = null; atualizar(); };
+
+    // Atualiza quando o paciente envia boletim/registra dose em outra aba
+    window.addEventListener("storage", async e => {
+      if (CHAVES_SAUDE.includes(e.key)) await DB.recarregar(e.key);
+      atualizar();
+    });
+
+    DB.iniciar().then(() => { desenharHorarios(); atualizar(); }).catch(erroFatal);
+  </script>
+</body>
+</html>
