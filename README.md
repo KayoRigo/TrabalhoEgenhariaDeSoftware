@@ -9,7 +9,7 @@ O app tem duas áreas:
 
 ## ▶️ Como acessar
 
-**Abra o link do app: `https://SEU-USUARIO.github.io/NOME-DO-REPOSITORIO/`**
+**Abra o link do app: https://kayorigo.github.io/TrabalhoEgenhariaDeSoftware/**
 
 Não é preciso instalar nada. Funciona no navegador do computador ou do celular.
 
